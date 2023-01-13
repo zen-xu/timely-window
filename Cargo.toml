@@ -5,3 +5,4 @@ edition = "2021"
 authors = ["ZhengYu, Xu <zen-xu@outlook.com>"]
 
 [dependencies]
+timely = "0.12.0"
