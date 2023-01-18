@@ -7,19 +7,43 @@ use timely::dataflow::{Scope, Stream};
 use timely::progress::{PathSummary, Timestamp};
 use timely::Data;
 
+pub trait WindowBuffer<T: Timestamp, D: Data> {
+    /// store data with timestamp in buffer
+    fn store(&mut self, time: T, data: Vec<D>);
+}
+
 pub trait Window<G: Scope, D: Data> {
+    type Buffer: WindowBuffer<G::Timestamp, D>;
+
+    /// Get buffer reference
+    fn buffer(&mut self) -> &mut Self::Buffer;
+
     /// Provides one record with a timestamp.
     fn give(&mut self, time: G::Timestamp, datum: D) {
         self.give_vec(time, vec![datum])
     }
+
     /// Provides an iterator of records with a timestamp.
     fn give_iterator<I: Iterator<Item = D>>(&mut self, time: G::Timestamp, iter: I) {
         self.give_vec(time, iter.collect())
     }
+
     /// Provides an vector of records with a timestamp.
-    fn give_vec(&mut self, time: G::Timestamp, data: Vec<D>);
+    fn give_vec(&mut self, time: G::Timestamp, data: Vec<D>) {
+        self.on_new_data(&time, &data);
+        self.buffer().store(time, data);
+    }
+
+    fn on_new_data(&mut self, _time: &G::Timestamp, _data: &Vec<D>) {}
+
     fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
     fn drain(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
+}
+
+impl<T: Timestamp, D: Data> WindowBuffer<T, D> for HashMap<T, Vec<D>> {
+    fn store(&mut self, time: T, data: Vec<D>) {
+        self.entry(time).or_default().extend(data);
+    }
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
@@ -111,19 +135,7 @@ impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
 }
 
 impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
-    fn give_vec(&mut self, time: <G>::Timestamp, data: Vec<D>) {
-        if self.emit_time.is_none() {
-            self.emit_time = Some(self.size.results_in(&time).unwrap());
-        }
-        self.buffer.entry(time.clone()).or_default().extend(data);
-        if let Some(ref max_time) = self.max_time {
-            if max_time.lt(&time) {
-                self.max_time = Some(time)
-            }
-        } else {
-            self.max_time = Some(time)
-        }
-    }
+    type Buffer = HashMap<G::Timestamp, Vec<D>>;
 
     fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)> {
         let emit_time = self.emit_time.clone()?;
@@ -170,6 +182,22 @@ impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
         }
         reserved.sort_by(|(t1, _), (t2, _)| t1.cmp(&t2));
         Some((emit_time, reserved))
+    }
+
+    fn buffer(&mut self) -> &mut Self::Buffer {
+        &mut self.buffer
+    }
+
+    fn on_new_data(&mut self, time: &<G>::Timestamp, _data: &Vec<D>) {
+        if self.emit_time.is_none() {
+            self.emit_time = Some(self.size.results_in(time).unwrap());
+        }
+
+        match self.max_time.as_ref() {
+            Some(max_time) if max_time.lt(time) => self.max_time = Some(time.clone()),
+            None => self.max_time = Some(time.clone()),
+            _ => (),
+        }
     }
 }
 
