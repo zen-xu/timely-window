@@ -4,12 +4,37 @@ use std::vec;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::{FrontierNotificator, Operator};
 use timely::dataflow::{Scope, Stream};
+use timely::progress::frontier::MutableAntichain;
 use timely::progress::{PathSummary, Timestamp};
 use timely::Data;
 
 pub trait WindowBuffer<T: Timestamp, D: Data> {
     /// store data with timestamp in buffer
     fn store(&mut self, time: T, data: Vec<D>);
+}
+
+impl<T: Timestamp, D: Data> WindowBuffer<T, D> for HashMap<T, Vec<D>> {
+    fn store(&mut self, time: T, data: Vec<D>) {
+        self.entry(time).or_default().extend(data);
+    }
+}
+
+pub struct Watermark<'w, T: Timestamp> {
+    inner: &'w MutableAntichain<T>,
+}
+
+impl<'w, T: Timestamp> Watermark<'w, T> {
+    fn new(antichain: &'w MutableAntichain<T>) -> Self {
+        Self { inner: antichain }
+    }
+
+    pub fn less_than(&self, time: &T) -> bool {
+        self.inner.less_than(time)
+    }
+
+    pub fn less_equal(&self, time: &T) -> bool {
+        self.inner.less_equal(time)
+    }
 }
 
 pub trait Window<G: Scope, D: Data> {
@@ -39,14 +64,10 @@ pub trait Window<G: Scope, D: Data> {
 
     fn on_new_data(&mut self, _time: &G::Timestamp, _data: &Vec<D>) {}
 
-    fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
-    fn drain(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
-}
-
-impl<T: Timestamp, D: Data> WindowBuffer<T, D> for HashMap<T, Vec<D>> {
-    fn store(&mut self, time: T, data: Vec<D>) {
-        self.entry(time).or_default().extend(data);
-    }
+    fn try_emit<'w>(
+        &mut self,
+        watermark: Watermark<'w, G::Timestamp>,
+    ) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
@@ -54,7 +75,6 @@ pub trait WindowOp<G: Scope, D: Data> {
         &self,
         name: &str,
         window: W,
-        drain_when_finished: bool,
     ) -> Stream<G, Vec<(G::Timestamp, D)>>;
 }
 
@@ -63,7 +83,6 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
         &self,
         name: &str,
         mut window: W,
-        drain_when_finished: bool,
     ) -> Stream<G, Vec<(G::Timestamp, D)>> {
         let mut stash = HashMap::new();
 
@@ -73,26 +92,15 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
 
             move |input, output| {
                 if input.frontier().is_empty() {
-                    if drain_when_finished {
-                        if let Some((emit_time, emit_data)) = window.drain() {
-                            let cap = cap.as_mut().unwrap();
-                            let new_time = cap.delayed(&emit_time);
-                            stash
-                                .entry(new_time.clone())
-                                .or_insert_with(|| {
-                                    notificator.notify_at(new_time);
-                                    vec![]
-                                })
-                                .extend(emit_data)
-                        }
-                    }
                     cap = None;
                 } else {
                     input.for_each(|time, data| {
                         window.give_vec(time.time().clone(), data.take());
                     });
 
-                    if let Some((emit_time, emit_data)) = window.try_emit() {
+                    if let Some((emit_time, emit_data)) =
+                        window.try_emit(Watermark::new(input.frontier()))
+                    {
                         let cap = cap.as_mut().unwrap();
                         let new_time = cap.delayed(&emit_time);
                         cap.downgrade(&emit_time);
@@ -122,7 +130,6 @@ pub struct TumblingWindow<T: Timestamp, D: Data> {
     size: T::Summary,
     emit_time: Option<T>,
     buffer: HashMap<T, Vec<D>>,
-    max_time: Option<T>,
 }
 
 impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
@@ -132,7 +139,6 @@ impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
             size,
             emit_time,
             buffer: Default::default(),
-            max_time: None,
         }
     }
 }
@@ -140,12 +146,27 @@ impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
 impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
     type Buffer = HashMap<G::Timestamp, Vec<D>>;
 
-    fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)> {
-        let emit_time = self.emit_time.clone()?;
-        let max_time = self.max_time.clone().unwrap();
-        if max_time.lt(&emit_time) {
+    fn buffer(&mut self) -> &mut Self::Buffer {
+        &mut self.buffer
+    }
+
+    fn on_new_data(&mut self, time: &<G>::Timestamp, _data: &Vec<D>) {
+        if self.emit_time.is_none() {
+            self.emit_time = Some(self.size.results_in(time).unwrap());
+        }
+    }
+
+    fn try_emit<'w>(
+        &mut self,
+        watermark: Watermark<'w, G::Timestamp>,
+    ) -> Option<(<G>::Timestamp, Vec<(<G>::Timestamp, D)>)> {
+        let emit_time = self.emit_time.take()?;
+
+        if watermark.less_equal(&emit_time) {
+            self.emit_time = Some(emit_time);
             return None;
         }
+
         let mut ready_times = self
             .buffer
             .keys()
@@ -167,40 +188,7 @@ impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
         }
 
         self.emit_time = Some(self.size.results_in(&emit_time).unwrap());
-        Some((emit_time.clone(), data))
-    }
-
-    fn drain(&mut self) -> Option<(<G>::Timestamp, Vec<(<G>::Timestamp, D)>)> {
-        let emit_time = self.emit_time.clone()?;
-        let mut reserved = vec![];
-        for (time, data) in self.buffer.drain() {
-            reserved.extend(
-                data.into_iter()
-                    .map(|v| (time.clone(), v))
-                    .collect::<Vec<_>>(),
-            );
-        }
-        if reserved.is_empty() {
-            return None;
-        }
-        reserved.sort_by(|(t1, _), (t2, _)| t1.cmp(&t2));
-        Some((emit_time, reserved))
-    }
-
-    fn buffer(&mut self) -> &mut Self::Buffer {
-        &mut self.buffer
-    }
-
-    fn on_new_data(&mut self, time: &<G>::Timestamp, _data: &Vec<D>) {
-        if self.emit_time.is_none() {
-            self.emit_time = Some(self.size.results_in(time).unwrap());
-        }
-
-        match self.max_time.as_ref() {
-            Some(max_time) if max_time.lt(time) => self.max_time = Some(time.clone()),
-            None => self.max_time = Some(time.clone()),
-            _ => (),
-        }
+        Some((emit_time, data))
     }
 }
 
@@ -218,7 +206,7 @@ mod tests {
                 let probe = stream.probe();
                 stream
                     .inspect_time(|t, v| println!("A {t:?} {v:?}"))
-                    .window("A", TumblingWindow::new(4, None), false)
+                    .window("A", TumblingWindow::new(4, None))
                     .inspect_time(|t, d| println!("B {t:?} {d:?}"));
                 (input, probe)
             });
