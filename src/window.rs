@@ -8,22 +8,24 @@ use timely::progress::{PathSummary, Timestamp};
 use timely::Data;
 
 pub trait Window<G: Scope, D: Data> {
-    fn name(&self) -> String;
-    fn send(&mut self, time: G::Timestamp, data: Vec<D>);
+    fn give(&mut self, time: G::Timestamp, data: Vec<D>);
     fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
-    fn debug(&self) -> String;
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
-    fn window<W: Window<G, D> + 'static>(&self, window: W) -> Stream<G, Vec<(G::Timestamp, D)>>;
+    fn window<W: Window<G, D> + 'static>(
+        &self,
+        name: &str,
+        window: W,
+    ) -> Stream<G, Vec<(G::Timestamp, D)>>;
 }
 
 impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
     fn window<W: Window<G, D> + 'static>(
         &self,
+        name: &str,
         mut window: W,
     ) -> Stream<G, Vec<(G::Timestamp, D)>> {
-        let name = window.name();
         let mut stash = HashMap::new();
         self.unary_notify(
             Pipeline,
@@ -32,7 +34,7 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
             move |input, output, notificator| {
                 input.for_each(|time, data| {
                     let data = data.take();
-                    window.send(time.time().clone(), data);
+                    window.give(time.time().clone(), data);
                     if let Some((emit_time, emit_data)) = window.try_emit() {
                         let new_time = time.delayed(&emit_time);
                         stash
@@ -77,11 +79,7 @@ impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
 }
 
 impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
-    fn name(&self) -> String {
-        "TumblingWindow".into()
-    }
-
-    fn send(&mut self, time: <G>::Timestamp, data: Vec<D>) {
+    fn give(&mut self, time: <G>::Timestamp, data: Vec<D>) {
         if self.emit_time.is_none() {
             self.emit_time = Some(self.size.results_in(&time).unwrap());
         }
@@ -124,10 +122,6 @@ impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
         self.emit_time = Some(self.size.results_in(&emit_time).unwrap());
         Some((emit_time.clone(), data))
     }
-
-    fn debug(&self) -> String {
-        format!("len {}", self.buffer.len())
-    }
 }
 
 #[cfg(test)]
@@ -144,7 +138,7 @@ mod tests {
                 let probe = stream.probe();
                 stream
                     .inspect_time(|t, v| println!("A {t:?} {v:?}"))
-                    .window(TumblingWindow::new(4, None))
+                    .window("A", TumblingWindow::new(4, None))
                     .inspect_time(|t, d| println!("B {t:?} {d:?}"));
                 (input, probe)
             });
