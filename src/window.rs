@@ -19,16 +19,19 @@ pub trait Window<G: Scope, D: Data> {
     fn buffer(&mut self) -> &mut Self::Buffer;
 
     /// Provides one record with a timestamp.
+    #[inline]
     fn give(&mut self, time: G::Timestamp, datum: D) {
         self.give_vec(time, vec![datum])
     }
 
     /// Provides an iterator of records with a timestamp.
+    #[inline]
     fn give_iterator<I: Iterator<Item = D>>(&mut self, time: G::Timestamp, iter: I) {
         self.give_vec(time, iter.collect())
     }
 
     /// Provides an vector of records with a timestamp.
+    #[inline]
     fn give_vec(&mut self, time: G::Timestamp, data: Vec<D>) {
         self.on_new_data(&time, &data);
         self.buffer().store(time, data);
