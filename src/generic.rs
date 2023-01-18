@@ -9,13 +9,27 @@ use timely::progress::Timestamp;
 use timely::Data;
 
 pub trait WindowBuffer<T: Timestamp, D: Data> {
-    /// store data with timestamp in buffer
+    /// List stored timestamps
+    fn timestamps(&self) -> Vec<&T>;
+
+    /// Store data with timestamp in buffer
     fn store(&mut self, time: T, data: Vec<D>);
+
+    /// Remove buffered timestamp and pop its data
+    fn remove(&mut self, time: &T) -> Option<Vec<D>>;
 }
 
 impl<T: Timestamp, D: Data> WindowBuffer<T, D> for HashMap<T, Vec<D>> {
+    fn timestamps(&self) -> Vec<&T> {
+        self.keys().collect::<Vec<_>>()
+    }
+
     fn store(&mut self, time: T, data: Vec<D>) {
         self.entry(time).or_default().extend(data);
+    }
+
+    fn remove(&mut self, time: &T) -> Option<Vec<D>> {
+        HashMap::<T, Vec<D>>::remove(self, &time)
     }
 }
 
@@ -38,10 +52,8 @@ impl<'w, T: Timestamp> Watermark<'w, T> {
 }
 
 pub trait Window<G: Scope, D: Data> {
-    type Buffer: WindowBuffer<G::Timestamp, D>;
-
     /// Get buffer reference
-    fn buffer(&mut self) -> &mut Self::Buffer;
+    fn buffer(&mut self) -> &mut dyn WindowBuffer<G::Timestamp, D>;
 
     /// Provides one record with a timestamp.
     #[inline]

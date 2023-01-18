@@ -1,34 +1,40 @@
 use std::collections::HashMap;
-use std::vec;
 
 use timely::progress::Timestamp;
 use timely::Data;
 use timely::{dataflow::Scope, progress::PathSummary};
 
-use crate::generic::{Watermark, Window};
+use crate::{Watermark, Window, WindowBuffer};
 
 pub struct TumblingWindow<T: Timestamp, D: Data> {
     size: T::Summary,
     emit_time: Option<T>,
-    buffer: HashMap<T, Vec<D>>,
+    buffer: Box<dyn WindowBuffer<T, D>>,
 }
 
 impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
     pub fn new(size: T::Summary, init_time: Option<T>) -> Self {
+        Self::new_with_buffer(size, init_time, HashMap::default())
+    }
+
+    pub fn new_with_buffer<B: WindowBuffer<T, D> + 'static>(
+        size: T::Summary,
+        init_time: Option<T>,
+        buffer: B,
+    ) -> Self {
         let emit_time = init_time.map(|t| size.results_in(&t).unwrap());
+        let buffer = Box::new(buffer);
         Self {
             size,
             emit_time,
-            buffer: Default::default(),
+            buffer,
         }
     }
 }
 
 impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
-    type Buffer = HashMap<G::Timestamp, Vec<D>>;
-
-    fn buffer(&mut self) -> &mut Self::Buffer {
-        &mut self.buffer
+    fn buffer(&mut self) -> &mut dyn WindowBuffer<G::Timestamp, D> {
+        self.buffer.as_mut()
     }
 
     fn on_new_data(&mut self, time: &<G>::Timestamp, _data: &Vec<D>) {
@@ -50,7 +56,8 @@ impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
 
         let mut ready_times = self
             .buffer
-            .keys()
+            .timestamps()
+            .into_iter()
             .filter(|time| (*time).lt(&emit_time))
             .map(Clone::clone)
             .collect::<Vec<_>>();
