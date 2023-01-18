@@ -62,8 +62,10 @@ pub trait Window<G: Scope, D: Data> {
         self.buffer().store(time, data);
     }
 
+    /// The hook which will be invoked when given new data
     fn on_new_data(&mut self, _time: &G::Timestamp, _data: &Vec<D>) {}
 
+    /// Try to emit data from buffer by the given watermark
     fn try_emit<'w>(
         &mut self,
         watermark: Watermark<'w, G::Timestamp>,
@@ -187,6 +189,7 @@ impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
             );
         }
 
+        // update next emit time
         self.emit_time = Some(self.size.results_in(&emit_time).unwrap());
         Some((emit_time, data))
     }
