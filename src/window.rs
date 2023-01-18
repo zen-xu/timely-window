@@ -8,12 +8,15 @@ use timely::progress::{PathSummary, Timestamp};
 use timely::Data;
 
 pub trait Window<G: Scope, D: Data> {
+    /// Provides one record with a timestamp.
     fn give(&mut self, time: G::Timestamp, datum: D) {
         self.give_vec(time, vec![datum])
     }
+    /// Provides an iterator of records with a timestamp.
     fn give_iterator<I: Iterator<Item = D>>(&mut self, time: G::Timestamp, iter: I) {
         self.give_vec(time, iter.collect())
     }
+    /// Provides an vector of records with a timestamp.
     fn give_vec(&mut self, time: G::Timestamp, data: Vec<D>);
     fn try_emit(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
     fn drain(&mut self) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
