@@ -145,10 +145,3 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
         })
     }
 }
-
-#[test]
-fn test_hash_map() {
-    let mut map = HashMap::from([(1, vec!["2"]), (3, vec!["4"])]);
-    map.store(1, vec!["3"]);
-    println!("{:?}", map);
-}
