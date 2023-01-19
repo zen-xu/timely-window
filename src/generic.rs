@@ -8,27 +8,33 @@ use timely::progress::frontier::MutableAntichain;
 use timely::progress::Timestamp;
 use timely::Data;
 
-pub trait WindowBuffer<T: Timestamp, D: Data> {
+pub trait WindowBuffer: Default {
+    type Timestamp: Timestamp;
+    type Datum: Data;
+
     /// List stored timestamps
-    fn timestamps(&self) -> Vec<&T>;
+    fn timestamps(&self) -> Vec<&Self::Timestamp>;
 
     /// Store data with timestamp in buffer
-    fn store(&mut self, time: T, data: Vec<D>);
+    fn store(&mut self, time: Self::Timestamp, data: Vec<Self::Datum>);
 
     /// Remove buffered timestamp and pop its data
-    fn remove(&mut self, time: &T) -> Option<Vec<D>>;
+    fn remove(&mut self, time: &Self::Timestamp) -> Option<Vec<Self::Datum>>;
 }
 
-impl<T: Timestamp, D: Data> WindowBuffer<T, D> for HashMap<T, Vec<D>> {
-    fn timestamps(&self) -> Vec<&T> {
+impl<T: Timestamp, D: Data> WindowBuffer for HashMap<T, Vec<D>> {
+    type Timestamp = T;
+    type Datum = D;
+
+    fn timestamps(&self) -> Vec<&Self::Timestamp> {
         self.keys().collect::<Vec<_>>()
     }
 
-    fn store(&mut self, time: T, data: Vec<D>) {
+    fn store(&mut self, time: Self::Timestamp, data: Vec<Self::Datum>) {
         self.entry(time).or_default().extend(data);
     }
 
-    fn remove(&mut self, time: &T) -> Option<Vec<D>> {
+    fn remove(&mut self, time: &Self::Timestamp) -> Option<Vec<Self::Datum>> {
         HashMap::<T, Vec<D>>::remove(self, &time)
     }
 }
@@ -51,38 +57,41 @@ impl<'w, T: Timestamp> Watermark<'w, T> {
     }
 }
 
-pub trait Window<T: Timestamp, D: Data> {
+pub trait Window<B: WindowBuffer> {
     /// Get buffer reference
-    fn buffer(&mut self) -> &mut dyn WindowBuffer<T, D>;
+    fn buffer(&mut self) -> &mut B;
 
     /// Provides one record with a timestamp.
     #[inline]
-    fn give(&mut self, time: T, datum: D) {
+    fn give(&mut self, time: B::Timestamp, datum: B::Datum) {
         self.give_vec(time, vec![datum])
     }
 
     /// Provides an iterator of records with a timestamp.
     #[inline]
-    fn give_iterator<I: Iterator<Item = D>>(&mut self, time: T, iter: I) {
+    fn give_iterator<I: Iterator<Item = B::Datum>>(&mut self, time: B::Timestamp, iter: I) {
         self.give_vec(time, iter.collect())
     }
 
     /// Provides an vector of records with a timestamp.
     #[inline]
-    fn give_vec(&mut self, time: T, data: Vec<D>) {
+    fn give_vec(&mut self, time: B::Timestamp, data: Vec<B::Datum>) {
         self.on_new_data(&time, &data);
         self.buffer().store(time, data);
     }
 
     /// The hook which will be invoked when given new data
-    fn on_new_data(&mut self, _time: &T, _data: &Vec<D>) {}
+    fn on_new_data(&mut self, _time: &B::Timestamp, _data: &Vec<B::Datum>) {}
 
     /// Try to emit data from buffer by the given watermark
-    fn try_emit<'w>(&mut self, watermark: Watermark<'w, T>) -> Option<(T, Vec<(T, D)>)>;
+    fn try_emit<'w>(
+        &mut self,
+        watermark: Watermark<'w, B::Timestamp>,
+    ) -> Option<(B::Timestamp, Vec<(B::Timestamp, B::Datum)>)>;
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
-    fn window<W: Window<G::Timestamp, D> + 'static>(
+    fn window<W: Window<B> + 'static, B: WindowBuffer<Timestamp = G::Timestamp, Datum = D>>(
         &self,
         name: &str,
         window: W,
@@ -90,7 +99,7 @@ pub trait WindowOp<G: Scope, D: Data> {
 }
 
 impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
-    fn window<W: Window<G::Timestamp, D> + 'static>(
+    fn window<W: Window<B> + 'static, B: WindowBuffer<Timestamp = G::Timestamp, Datum = D>>(
         &self,
         name: &str,
         mut window: W,
@@ -135,4 +144,11 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
             }
         })
     }
+}
+
+#[test]
+fn test_hash_map() {
+    let mut map = HashMap::from([(1, vec!["2"]), (3, vec!["4"])]);
+    map.store(1, vec!["3"]);
+    println!("{:?}", map);
 }

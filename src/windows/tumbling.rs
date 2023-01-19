@@ -1,49 +1,43 @@
-use std::collections::HashMap;
-
 use timely::progress::PathSummary;
 use timely::progress::Timestamp;
-use timely::Data;
 
 use crate::{Watermark, Window, WindowBuffer};
 
-pub struct TumblingWindow<T: Timestamp, D: Data> {
-    size: T::Summary,
-    emit_time: Option<T>,
-    buffer: Box<dyn WindowBuffer<T, D>>,
+pub struct TumblingWindow<B: WindowBuffer> {
+    size: <B::Timestamp as Timestamp>::Summary,
+    emit_time: Option<B::Timestamp>,
+    buffer: B,
 }
 
-impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
-    pub fn new(size: T::Summary, init_time: Option<T>) -> Self {
-        Self::new_with_buffer(size, init_time, HashMap::default())
-    }
-
-    pub fn new_with_buffer<B: WindowBuffer<T, D> + 'static>(
-        size: T::Summary,
-        init_time: Option<T>,
-        buffer: B,
+impl<B: WindowBuffer> TumblingWindow<B> {
+    pub fn new(
+        size: <B::Timestamp as Timestamp>::Summary,
+        init_time: Option<B::Timestamp>,
     ) -> Self {
         let emit_time = init_time.map(|t| size.results_in(&t).unwrap());
-        let buffer = Box::new(buffer);
         Self {
             size,
             emit_time,
-            buffer,
+            buffer: B::default(),
         }
     }
 }
 
-impl<T: Timestamp, D: Data> Window<T, D> for TumblingWindow<T, D> {
-    fn buffer(&mut self) -> &mut dyn WindowBuffer<T, D> {
-        self.buffer.as_mut()
+impl<B: WindowBuffer> Window<B> for TumblingWindow<B> {
+    fn buffer(&mut self) -> &mut B {
+        &mut self.buffer
     }
 
-    fn on_new_data(&mut self, time: &T, _data: &Vec<D>) {
+    fn on_new_data(&mut self, time: &B::Timestamp, _data: &Vec<B::Datum>) {
         if self.emit_time.is_none() {
             self.emit_time = Some(self.size.results_in(time).unwrap());
         }
     }
 
-    fn try_emit<'w>(&mut self, watermark: Watermark<'w, T>) -> Option<(T, Vec<(T, D)>)> {
+    fn try_emit<'w>(
+        &mut self,
+        watermark: Watermark<'w, B::Timestamp>,
+    ) -> Option<(B::Timestamp, Vec<(B::Timestamp, B::Datum)>)> {
         let emit_time = self.emit_time.take()?;
 
         if watermark.less_equal(&emit_time) {
@@ -82,6 +76,7 @@ impl<T: Timestamp, D: Data> Window<T, D> for TumblingWindow<T, D> {
 mod tests {
     use super::*;
     use crate::generic::WindowOp;
+    use std::collections::HashMap;
     use timely::dataflow::operators::*;
 
     #[test]
@@ -93,7 +88,7 @@ mod tests {
                 let probe = stream.probe();
                 stream
                     .inspect_time(|t, v| println!("A {t:?} {v:?}"))
-                    .window("A", TumblingWindow::new(4, None))
+                    .window("A", TumblingWindow::<HashMap<_, _>>::new(4, None))
                     .inspect_time(|t, d| println!("B {t:?} {d:?}"));
                 (input, probe)
             });
