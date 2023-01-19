@@ -51,41 +51,38 @@ impl<'w, T: Timestamp> Watermark<'w, T> {
     }
 }
 
-pub trait Window<G: Scope, D: Data> {
+pub trait Window<T: Timestamp, D: Data> {
     /// Get buffer reference
-    fn buffer(&mut self) -> &mut dyn WindowBuffer<G::Timestamp, D>;
+    fn buffer(&mut self) -> &mut dyn WindowBuffer<T, D>;
 
     /// Provides one record with a timestamp.
     #[inline]
-    fn give(&mut self, time: G::Timestamp, datum: D) {
+    fn give(&mut self, time: T, datum: D) {
         self.give_vec(time, vec![datum])
     }
 
     /// Provides an iterator of records with a timestamp.
     #[inline]
-    fn give_iterator<I: Iterator<Item = D>>(&mut self, time: G::Timestamp, iter: I) {
+    fn give_iterator<I: Iterator<Item = D>>(&mut self, time: T, iter: I) {
         self.give_vec(time, iter.collect())
     }
 
     /// Provides an vector of records with a timestamp.
     #[inline]
-    fn give_vec(&mut self, time: G::Timestamp, data: Vec<D>) {
+    fn give_vec(&mut self, time: T, data: Vec<D>) {
         self.on_new_data(&time, &data);
         self.buffer().store(time, data);
     }
 
     /// The hook which will be invoked when given new data
-    fn on_new_data(&mut self, _time: &G::Timestamp, _data: &Vec<D>) {}
+    fn on_new_data(&mut self, _time: &T, _data: &Vec<D>) {}
 
     /// Try to emit data from buffer by the given watermark
-    fn try_emit<'w>(
-        &mut self,
-        watermark: Watermark<'w, G::Timestamp>,
-    ) -> Option<(G::Timestamp, Vec<(G::Timestamp, D)>)>;
+    fn try_emit<'w>(&mut self, watermark: Watermark<'w, T>) -> Option<(T, Vec<(T, D)>)>;
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
-    fn window<W: Window<G, D> + 'static>(
+    fn window<W: Window<G::Timestamp, D> + 'static>(
         &self,
         name: &str,
         window: W,
@@ -93,7 +90,7 @@ pub trait WindowOp<G: Scope, D: Data> {
 }
 
 impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
-    fn window<W: Window<G, D> + 'static>(
+    fn window<W: Window<G::Timestamp, D> + 'static>(
         &self,
         name: &str,
         mut window: W,

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use timely::progress::PathSummary;
 use timely::progress::Timestamp;
 use timely::Data;
-use timely::{dataflow::Scope, progress::PathSummary};
 
 use crate::{Watermark, Window, WindowBuffer};
 
@@ -32,21 +32,18 @@ impl<T: Timestamp, D: Data> TumblingWindow<T, D> {
     }
 }
 
-impl<G: Scope, D: Data> Window<G, D> for TumblingWindow<G::Timestamp, D> {
-    fn buffer(&mut self) -> &mut dyn WindowBuffer<G::Timestamp, D> {
+impl<T: Timestamp, D: Data> Window<T, D> for TumblingWindow<T, D> {
+    fn buffer(&mut self) -> &mut dyn WindowBuffer<T, D> {
         self.buffer.as_mut()
     }
 
-    fn on_new_data(&mut self, time: &<G>::Timestamp, _data: &Vec<D>) {
+    fn on_new_data(&mut self, time: &T, _data: &Vec<D>) {
         if self.emit_time.is_none() {
             self.emit_time = Some(self.size.results_in(time).unwrap());
         }
     }
 
-    fn try_emit<'w>(
-        &mut self,
-        watermark: Watermark<'w, G::Timestamp>,
-    ) -> Option<(<G>::Timestamp, Vec<(<G>::Timestamp, D)>)> {
+    fn try_emit<'w>(&mut self, watermark: Watermark<'w, T>) -> Option<(T, Vec<(T, D)>)> {
         let emit_time = self.emit_time.take()?;
 
         if watermark.less_equal(&emit_time) {
