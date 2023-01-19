@@ -1,3 +1,3 @@
 pub mod tumbling;
 
-//pub use tumbling::TumblingWindow;
+pub use tumbling::TumblingWindow;
