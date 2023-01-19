@@ -1,7 +1,7 @@
 use timely::progress::PathSummary;
 use timely::progress::Timestamp;
 
-use crate::{Watermark, Window, WindowBuffer};
+use crate::{EmitResult, Watermark, Window, WindowBuffer};
 
 pub struct TumblingWindow<B: WindowBuffer> {
     size: <B::Timestamp as Timestamp>::Summary,
@@ -28,16 +28,13 @@ impl<B: WindowBuffer> Window<B> for TumblingWindow<B> {
         &mut self.buffer
     }
 
-    fn on_new_data(&mut self, time: &B::Timestamp, _data: &Vec<B::Datum>) {
+    fn on_new_data(&mut self, time: &B::Timestamp, _data: &[B::Datum]) {
         if self.emit_time.is_none() {
             self.emit_time = Some(self.size.results_in(time).unwrap());
         }
     }
 
-    fn try_emit<'w>(
-        &mut self,
-        watermark: Watermark<'w, B::Timestamp>,
-    ) -> Option<(B::Timestamp, Vec<(B::Timestamp, B::Datum)>)> {
+    fn try_emit(&mut self, watermark: Watermark<B::Timestamp>) -> EmitResult<B> {
         let emit_time = self.emit_time.take()?;
 
         if watermark.less_equal(&emit_time) {

@@ -35,7 +35,7 @@ impl<T: Timestamp, D: Data> WindowBuffer for HashMap<T, Vec<D>> {
     }
 
     fn remove(&mut self, time: &Self::Timestamp) -> Option<Vec<Self::Datum>> {
-        HashMap::<T, Vec<D>>::remove(self, &time)
+        HashMap::<T, Vec<D>>::remove(self, time)
     }
 }
 
@@ -56,6 +56,11 @@ impl<'w, T: Timestamp> Watermark<'w, T> {
         self.inner.less_equal(time)
     }
 }
+
+pub type EmitResult<B> = Option<(
+    <B as WindowBuffer>::Timestamp,
+    Vec<(<B as WindowBuffer>::Timestamp, <B as WindowBuffer>::Datum)>,
+)>;
 
 pub trait Window<B: WindowBuffer> {
     /// Get buffer reference
@@ -81,13 +86,10 @@ pub trait Window<B: WindowBuffer> {
     }
 
     /// The hook which will be invoked when given new data
-    fn on_new_data(&mut self, _time: &B::Timestamp, _data: &Vec<B::Datum>) {}
+    fn on_new_data(&mut self, _time: &B::Timestamp, _data: &[B::Datum]) {}
 
     /// Try to emit data from buffer by the given watermark
-    fn try_emit<'w>(
-        &mut self,
-        watermark: Watermark<'w, B::Timestamp>,
-    ) -> Option<(B::Timestamp, Vec<(B::Timestamp, B::Datum)>)>;
+    fn try_emit(&mut self, watermark: Watermark<B::Timestamp>) -> EmitResult<B>;
 }
 
 pub trait WindowOp<G: Scope, D: Data> {
@@ -106,7 +108,7 @@ impl<G: Scope, D: Data> WindowOp<G, D> for Stream<G, D> {
     ) -> Stream<G, Vec<(G::Timestamp, D)>> {
         let mut stash = HashMap::new();
 
-        self.unary_frontier(Pipeline, &name, |cap, _| {
+        self.unary_frontier(Pipeline, name, |cap, _| {
             let mut cap = Some(cap);
             let mut notificator = FrontierNotificator::new();
 
