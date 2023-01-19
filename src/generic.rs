@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::vec;
 
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::{FrontierNotificator, Operator};
